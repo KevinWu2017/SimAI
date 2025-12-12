@@ -71,10 +71,13 @@ int main(int argc,char *argv[]) {
     std::cerr << "-h,     --help              Help message" << std::endl;
     return -1;
   }
+  // 设置模拟模式为 ANALYTICAL
   param->mode = ModeType::ANALYTICAL;
   physical_dims = {param->gpus};
   // AnaInit(argc, argv);
   uint32_t using_num_gpus = 0;
+
+  // 构建包含 NVSwitch 的节点映射
   uint32_t all_gpu_num = param->gpus[0];
   for (auto &a : physical_dims) {
     int job_npus = 1;
@@ -92,16 +95,18 @@ int main(int argc,char *argv[]) {
     param->net_work_param.NVswitchs.push_back(i);
   }
 
+  // 扩展物理维度以包含 NVSwitch
   physical_dims[0][0] += param->net_work_param.nvswitch_num;
   using_num_gpus += param->net_work_param.nvswitch_num;
 
+  // 初始化队列配置
   std::vector<int> queues_per_dim(physical_dims[0].size(), 1);
   int job_npus = 1;
   for (auto dim : physical_dims[0]) {
       job_npus *= dim;
     }
   
-  
+  // 创建 AnalyticalNetwork 和 Sys 实例
   AnalyticalNetWork *analytical_network = new AnalyticalNetWork(0);
   AstraSim::Sys *systems = new AstraSim::Sys(
     analytical_network,
@@ -130,12 +135,12 @@ int main(int argc,char *argv[]) {
   systems->nvswitch_id = node2nvswitch[0];
   systems->num_gpus = using_num_gpus - param->net_work_param.nvswitch_num;
   
-
-  systems->workload->fire();
+  // 启动模拟
+  systems->workload->fire();  // 触发工作负载开始
   std::cout << "SimAI begin run Analytical" << std::endl;
-  AnaSim::Run();
-  AnaSim::Stop();
-  AnaSim::Destroy();
+  AnaSim::Run();      // 启动分析模拟器主循环
+  AnaSim::Stop();     // 停止
+  AnaSim::Destroy();  // 清理资源
 
   std::cout << "SimAI-Analytical finished." << std::endl;
   return 0;
