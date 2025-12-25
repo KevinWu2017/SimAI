@@ -334,6 +334,8 @@ void Layer::print_involved_dimensions(std::vector<bool>& involved_dimensions) {
   }
   std::cout << std::endl;
 }
+
+// 完整report
 LayerData Layer::report(
     std::string run_name,
     int layer_num,
@@ -545,6 +547,8 @@ std::string getFileName(const std::string& path) {
     }
     return path; 
 }
+
+// 分析模式：简化版report
 LayerData Layer::report(
     std::string run_name,
     int layer_num,
@@ -560,19 +564,50 @@ LayerData Layer::report(
     double& Expose_TP_comm,
     double& Expose_EP_comm,
     bool seprate_log) {
+
+  // ===== 调试：打印所有输入参数 =====
+  std::cout << "=== Layer::report DEBUG INPUTS ===" << std::endl;
+  std::cout << "run_name: " << run_name << std::endl;
+  std::cout << "layer_num: " << layer_num << std::endl;
+  std::cout << "total_rows: " << total_rows << std::endl;
+  std::cout << "stat_row: " << stat_row << std::endl;
+  std::cout << "detailed ptr: " << detailed << std::endl;        // 打印地址 or nullptr
+  std::cout << "EndToEnd ptr: " << EndToEnd << std::endl;
+  std::cout << "seprate_log: " << seprate_log << std::endl;
+
+  // 打印引用参数的当前值（注意：这是调用前的累计值！）
+  std::cout << "INPUT REF VALUES:" << std::endl;
+  std::cout << "  total_compute = " << total_compute << std::endl;
+  std::cout << "  total_exposed = " << total_exposed << std::endl;
+  std::cout << "  pre_bubble_time = " << pre_bubble_time << std::endl;
+  std::cout << "  DP_comm = " << DP_comm << std::endl;
+  std::cout << "  DP_EP_comm = " << DP_EP_comm << std::endl;
+  std::cout << "  Expose_TP_comm = " << Expose_TP_comm << std::endl;
+  std::cout << "  Expose_EP_comm = " << Expose_EP_comm << std::endl;
+  std::cout << "=================================" << std::endl;
+  // ===== 调试结束 =====
+
   LayerData layerData;
   take_stream_stats_average();
+  // 张量并行规模
   int TP_size = workload->model_parallel_npu_group;
+  // 流水线 stage 数
   int PP_size = workload->pipeline_model_parallelism;
+  // virtual pipeline stages
   int vpp = workload->vpp;
+  // Gradient Accumulation 步数
   uint32_t pp_commsize = workload->pp_commsize;
+
+  // DP 规模 = 总 GPU / (TP × PP)
   int DP_size = generator->all_gpus[0] / (TP_size * PP_size);
   int GA = workload->GA;
+  // 专家并行规模
   int EP_size = workload->expert_parallel_npu_group;
   int fwd_pass_group_size ;
   int weight_grad_group_size ;
   int input_grad_group_size ;
   UserParam* param = UserParam::getInstance();
+  // 确定各阶段通信组大小（按通信类型）
   input_grad_group_size =
         input_grad_group_type == MockNccl::GroupType::EP ? EP_size : TP_size;
     fwd_pass_group_size =
@@ -580,7 +615,21 @@ LayerData Layer::report(
     weight_grad_group_size =
         weight_grad_group_type == MockNccl::GroupType::DP_EP ? DP_size / EP_size
                                                              : DP_size;
+  // ANALYTICAL 模式：直接计算通信时间（核心！）
   if(param->mode == ModeType::ANALYTICAL){
+    
+    // ===== 调试：打印 compute_time 的所有参数 =====
+    std::cout << "=== DEBUG: compute_time inputs for forward pass (layer " << id << ") ===" << std::endl;
+    std::cout << "fwd_pass_comm_type: " << static_cast<int>(fwd_pass_comm_type) << std::endl;
+    std::cout << "TP_size: " << TP_size << std::endl;
+    std::cout << "fwd_pass_group_size: " << fwd_pass_group_size << std::endl;
+    std::cout << "fwd_pass_comm_size (bytes): " << fwd_pass_comm_size << std::endl;
+    std::cout << "fwd_pass_group_type: " 
+              << (fwd_pass_group_type == MockNccl::GroupType::EP ? "EP" : 
+                  fwd_pass_group_type == MockNccl::GroupType::TP ? "TP" : "OTHER") << std::endl;
+    std::cout << "total_gpus: " << generator->all_gpus[0] << std::endl;
+    std::cout << "EP_size: " << EP_size << std::endl;
+    std::cout << "----------------------------------------" << std::endl;
     
     total_fwd_comm = compute_time(fwd_pass_comm_type,TP_size,fwd_pass_group_size,fwd_pass_comm_size,fwd_pass_group_type,generator->all_gpus[0],EP_size);
     total_weight_grad_comm = compute_time(weight_grad_comm_type,TP_size,weight_grad_group_size,weight_grad_comm_size,weight_grad_group_type,generator->all_gpus[0],EP_size);
@@ -589,7 +638,9 @@ LayerData Layer::report(
     total_waiting_for_ig_comm = total_input_grad_comm;  //tp backward
     total_waiting_for_wg_comm = total_weight_grad_comm;
     
-
+    // 可选：也打印返回值
+    std::cout << ">>> total_fwd_comm (cycles): " << total_fwd_comm << std::endl;
+    std::cout << ">>> total_fwd_comm (seconds): " << total_fwd_comm / FREQ << std::endl;
   }
   if (id != "embedding_layer"){
       pre_bubble_time += ((total_waiting_for_fwd_comm + total_forward_pass_compute + total_weight_grad_compute + total_input_grad_compute + total_waiting_for_ig_comm) / FREQ);
@@ -896,6 +947,9 @@ char* comtype_to_coll(ComType comtype) {
             return "unknown";
     }
 }
+
+// 根据通信类型（collective type）、并行组类型（GroupType）、数据规模、拓扑结构等信息，查询一个“带宽利用率比例”（ratio），用于修正理想带宽模型，使其更贴近真实硬件表现。
+// 这个 ratio 通常小于或等于 1.0，表示实际有效带宽占理论峰值带宽的比例。它来源于离线实测数据表（lookup table），是对网络/NVLink 在不同负载和拓扑下的效率建模。
 float Layer::cal_ratio(
     uint64_t data_size,
     int nranks,
@@ -908,10 +962,12 @@ float Layer::cal_ratio(
     auto nic_ratio_data = generator->nic_ratio_data;
     auto nvlink_ratio_data = generator->nvlink_ratio_data;
     auto ata_ratio_data = generator->ata_ratio_data;
+    // TP 组内的 AllGather / ReduceScatter
     if ((strcmp(coll_type, "allgather") == 0 || strcmp(coll_type, "reducescatter") == 0 ) && group_type == MockNccl::GroupType::TP){
         auto data = is_nvlink ? nvlink_ratio_data : nic_ratio_data;
         int _temp_nnode = (tp_size < gpus_per_server) ? 1 : tp_size / gpus_per_server ;
         return getValue(data_size, _temp_nnode, data);
+    // EP 组内的 AllToAll
     } else if (strcmp(coll_type, "alltoall") == 0 && group_type == MockNccl::GroupType::EP){
         auto data = ata_ratio_data;
         if(tp_size * nranks <= gpus_per_server){
@@ -922,6 +978,7 @@ float Layer::cal_ratio(
             int _temp_nnode = (tp_size * nranks) / gpus_per_server;
             return getValue(data_size, _temp_nnode, data);
         }
+    // TP 组内的 AllToAll
     } else if (strcmp(coll_type, "alltoall") == 0 && group_type == MockNccl::GroupType::TP){
         auto data = ata_ratio_data;
         if (tp_size <= gpus_per_server){
@@ -931,12 +988,16 @@ float Layer::cal_ratio(
             return getValue(data_size, _temp_nnode, data);
         }
     }
+    // DP / DP+EP 或其他 → ratio = 1.0
     else if(group_type == MockNccl::GroupType::DP || group_type == MockNccl::GroupType::DP_EP){
         return 1; 
     }else{
         return 1;
     }
 }
+
+// SimAI 框架中用于估算通信操作耗时（单位：Tick，即 CPU 时钟周期）的核心分析模型。
+// 给定通信类型、数据量、并行组配置和硬件拓扑，快速估算出该通信操作在真实系统中的执行时间。
 Tick Layer::compute_time(
     ComType comtype,
     int tp_size,
@@ -947,23 +1008,26 @@ Tick Layer::compute_time(
     int ep_size) {
   UserParam* param = UserParam::getInstance();
   Tick comp_time = 0;
+
+  // 无通信
   if (comtype == ComType::None) {
     return 0;
   }
 
-
+    // 提取硬件配置（来自 UserParam）
     int n_ranks;
     int nnics;
-    uint32_t  gpus_per_server = param->net_work_param.gpus_per_server;
-    GPUType gpu_type = param->net_work_param.gpu_type;
-    float nvlink_bw = param->net_work_param.nvlink_bw;
-    float bw_per_nic = param->net_work_param.bw_per_nic;
-    uint32_t nics_per_server = param->net_work_param.nics_per_server;
-    char* nic_type =  param->net_work_param.nic_type;
-    char* coll_type = comtype_to_coll(comtype);
+    uint32_t  gpus_per_server = param->net_work_param.gpus_per_server;  // 每服务器 GPU 数
+    GPUType gpu_type = param->net_work_param.gpu_type;                  // GPU 型号（影响 NVLink 拓扑）
+    float nvlink_bw = param->net_work_param.nvlink_bw;                  // NVLink 带宽（GB/s）
+    float bw_per_nic = param->net_work_param.bw_per_nic;                // 单 NIC 带宽（GB/s）
+    uint32_t nics_per_server = param->net_work_param.nics_per_server;   // 每服务器 NIC 数
+    char* nic_type =  param->net_work_param.nic_type;                   // NIC 类型（如 RoCE, IB）
+    char* coll_type = comtype_to_coll(comtype);                         // 转为字符串（"AllReduce" 等）
     float bw_ratio = 1.0;
     BusBwResult result;
 
+    // 小数据量（1B ~ 1MB）硬编码延迟表
     if (1 < data_size && data_size < 1048576){
       if(nranks == 2) comp_time = 10000;
       if(nranks == 4) comp_time = 12000;
@@ -974,27 +1038,33 @@ Tick Layer::compute_time(
       if(nranks == 128) comp_time = 320000;
       return comp_time;
     }
+
+  // 根据 group_type 判断通信拓扑，并调用 cal_busbw()
   if (group_type == MockNccl::GroupType::TP ){
       //TP_comm_inside
       if(tp_size <= gpus_per_server){
-      result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,1,coll_type,tp_size,nic_type);
+         // 所有 TP rank 在同一服务器 → 走 NVLink
+        result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,1,coll_type,tp_size,nic_type);
       }else{
+        // TP 跨服务器 → 需跨 NIC
         int _node_count = tp_size / gpus_per_server;
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,_node_count,coll_type,gpus_per_server,nic_type);
       }
-    }else if (group_type == MockNccl::GroupType::EP && nranks > 1)
-    {
-     if(tp_size * nranks <= gpus_per_server){
-      uint32_t _temp_gpus_per_server = gpus_per_server / tp_size;
-      result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,1,coll_type,_temp_gpus_per_server,nic_type);
-
-     }else{
-      int _node_count = (tp_size * nranks) / gpus_per_server;
-      uint32_t _temp_gpus_per_server = (gpus_per_server / tp_size > 1) ? (gpus_per_server / tp_size) : 1;
-      float _temp_nics_per_server = (tp_size > gpus_per_server) ? (nics_per_server / gpus_per_server) : (nics_per_server / tp_size);
-      result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,_node_count,coll_type,_temp_gpus_per_server,nic_type);
-     }
-    }else if(group_type == MockNccl::GroupType::DP && nranks > 1){
+  }
+  else if (group_type == MockNccl::GroupType::EP && nranks > 1) {
+      // EP 组 + TP 组都在单机内
+      if(tp_size * nranks <= gpus_per_server){
+        uint32_t _temp_gpus_per_server = gpus_per_server / tp_size;
+        result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,1,coll_type,_temp_gpus_per_server,nic_type);
+      }else{
+        // 跨服务器
+        int _node_count = (tp_size * nranks) / gpus_per_server;
+        uint32_t _temp_gpus_per_server = (gpus_per_server / tp_size > 1) ? (gpus_per_server / tp_size) : 1;
+        float _temp_nics_per_server = (tp_size > gpus_per_server) ? (nics_per_server / gpus_per_server) : (nics_per_server / tp_size);
+        result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,_node_count,coll_type,_temp_gpus_per_server,nic_type);
+      }
+  }
+  else if(group_type == MockNccl::GroupType::DP && nranks > 1){
       if(tp_size <= gpus_per_server){
         uint32_t _temp_gpus_per_server = gpus_per_server / tp_size;
         float _temp_nics_per_server = nics_per_server / tp_size;
@@ -1003,24 +1073,30 @@ Tick Layer::compute_time(
         float _temp_nics_per_server = nics_per_server / gpus_per_server;
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,nranks,coll_type,1,nic_type);
       }
-    }else if(group_type == MockNccl::GroupType::DP_EP && nranks > 1){
+  }
+  else if(group_type == MockNccl::GroupType::DP_EP && nranks > 1){
+      // 整个 (TP × EP) 块在单机内
       if(tp_size * ep_size <= gpus_per_server){
         float _temp_nics_per_server = nics_per_server / (tp_size * ep_size);
         uint32_t _temp_gpus_per_server = gpus_per_server / (tp_size * ep_size);
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,nranks,coll_type,_temp_gpus_per_server,nic_type);
-       
       }else{
+        // 跨服务器
         float _temp_nics_per_server = nics_per_server / gpus_per_server;
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,nranks,coll_type,1,nic_type);
       }
-    }else{
-      
+    }
+  else{
       comp_time = 0;
       return comp_time;
-    }
+  }
     
+    // 计算分布式训练中某次集体通信操作的通信耗时
+    // 计算“有效带宽利用率比例”，即：由于通信算法、拓扑限制或硬件瓶颈，实际可用带宽占理论最大带宽的比例
     bw_ratio = cal_ratio(data_size,nranks,tp_size,gpus_per_server,group_type,coll_type,result.is_nvlink);
     cout<<"Communication Type: "<<coll_type<<"Communication Group: "<<group_type<<"Group Size: "<< nranks<<"Data Size: "<<data_size<<"Ratio: "<<bw_ratio<<"Bottleneck is nvlink: "<<result.is_nvlink<<endl;
+
+    // 通信时间计算
     if(comtype == ComType::All_Reduce){
       comp_time = data_size * GBps / (bw_ratio * result.busbw) * 1e9 * 2 * 
             (nranks - 1) / (nranks / 1.0);
@@ -1049,10 +1125,14 @@ std::pair<float,float> Layer::compute_busbw(ComType comtype, int nranks, uint64_
 
   return std::make_pair(algbw,busbw);
 }
+
+// 模拟深度学习训练中某一层的前向传播通信阶段
+// 根据该层的通信类型（fwd_pass_comm_type），发起对应的集体通信操作，并设置回调机制，以便通信完成后能继续执行后续逻辑。
 void Layer::issue_forward_pass_comm(
     SchedulingPolicy pref_scheduling,
     CollectiveBarrier barrier) {
   MockNcclLog* NcclLog = MockNcclLog::getInstance();
+  // ANALYTI 模式（分析模式）
   #ifdef ANALYTI
     fwd_barrier = barrier;
     if (generator->id == 0){
@@ -1229,6 +1309,7 @@ void Layer::issue_forward_pass_comm(
   #endif
   NcclLog->writeLog(NcclLogLevel::DEBUG,"Fwd_Comm_Finished set_notifier success");
 }
+
 void Layer::issue_input_grad_comm(
     SchedulingPolicy pref_scheduling,
     CollectiveBarrier barrier) {

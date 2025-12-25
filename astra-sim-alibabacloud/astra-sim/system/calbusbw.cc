@@ -103,6 +103,8 @@ int lower_compare(char *coll_type, const char *lower_str) {
     return 1; 
 }
 
+// SimAI 通信性能模型中最核心的带宽计算逻辑
+// 根据硬件配置（NVLink/NIC）、通信类型（AllReduce/AllGather 等）、算法（Ring/Tree/NVLS）和拓扑（单机/多机、GPU 数），计算出该场景下的“有效聚合通信带宽”（GB/s）
 float calculateBusBw(CalculationParameters* params) {
     float nvlink_bw; 
     if (params->bw_intra > 0.0) {
@@ -128,18 +130,24 @@ float calculateBusBw(CalculationParameters* params) {
         return -1;
     }
 
+    // 判断是否启用跨 NIC 聚合（cross_nic）
     if (real_nics_per_node * nic_bw > nvlink_bw) {
         if (params->cross_nic == 2) params->cross_nic = 1;
     } else {
         if (params->cross_nic == 2) params->cross_nic = 0;
     }
 
+    // 计算 Ring 算法下的基础带宽（all_gather_bus_bw）
+    // 单机（node_count == 1）
     if (node_count == 1) {
         all_gather_bus_bw = nvlink_bw;
     } else {
+        // 多机 + 单 GPU/节点（gpus_per_node == 1）
         if (gpus_per_node == 1) {
             all_gather_bus_bw = nic_bw * real_nics_per_node;
         } else {
+            // 多机 + 多 GPU/节点（最复杂！）
+            // 不跨网卡的情况下，Ring All-Gather 的带宽 = 两者取最小
             all_gather_bus_bw = (nvlink_bw < nic_bw * real_nics_per_node) ? (params->is_nvlink = true, nvlink_bw) : nic_bw * real_nics_per_node;
             if (params->cross_nic == 1) {
                 params->is_nvlink = false;
@@ -157,12 +165,15 @@ float calculateBusBw(CalculationParameters* params) {
         nvls_bus_bw = calcNVLSBusBw(gpus_per_node, node_count, H800_NVLS_BW, nic_bw, real_nics_per_node);
     }
 
-    
+    // AllReduce：最复杂，支持多算法
     if (lower_compare(params->coll_type, "allreduce") == 0) {
+        // Ring 算法
         if (lower_compare(params->nccl_algo, "ring") == 0) {
             return all_gather_bus_bw;
+        // Tree 算法
         } else if (lower_compare(params->nccl_algo, "tree") == 0) {
             return tree_bus_bw;
+        // NVLS / NVLSTree（Hopper 特有）
         } else if (lower_compare(params->nccl_algo, "nvls") == 0 || lower_compare(params->nccl_algo, "nvlstree") == 0) {
             if (lower_compare(params->nccl_algo, "nvls") == 0 && node_count > 1) params->nccl_algo = "nvlstree";
             if (lower_compare(params->nccl_algo, "nvlstree") == 0 && node_count == 1) params->nccl_algo = "nvls";
@@ -180,6 +191,7 @@ float calculateBusBw(CalculationParameters* params) {
                 return -1;
             }
         } else {
+            // 用户未指定算法（nccl_algo 非 ring/tree/nvls），自动选择理论带宽最高的算法
             if (nvls_bus_bw > tree_bus_bw) {
                 if (all_gather_bus_bw > nvls_bus_bw) {
                     params->nccl_algo = "Ring";
@@ -203,7 +215,7 @@ float calculateBusBw(CalculationParameters* params) {
             }
         }
         
-
+    // AllGather 通常用 Ring 实现，直接复用 all_gather_bus_bw（即 Ring 带宽模型）。
     } else if (lower_compare(params->coll_type, "allgather") == 0) {
         params->nccl_algo = "Ring";
         return all_gather_bus_bw;
@@ -235,6 +247,7 @@ float calculateBusBw(CalculationParameters* params) {
     }
     return -1;
 }
+
 std::vector<std::vector<std::string>> readCSV(const std::string &filePath) {
     std::ifstream file(filePath);
     if (!file.is_open()) {
@@ -280,9 +293,10 @@ void printData(const std::vector<std::vector<std::string>> &data) {
     }
 }
 
-
+// SimAI 性能模型中用于计算“有效聚合通信带宽”（theoretical bus bandwidth）的核心工具函数。
 BusBwResult cal_busbw(GPUType node_type,float bw_intra,float bw_per_nic, float nics_pernode,int node_count,char* coll_type,int gpus_pernode,char* nic_type) {
     BusBwResult result;
+    // 初始化参数结构体 params
     CalculationParameters params;
     memset(&params, 0, sizeof(params));
     retcode = 0;
@@ -293,8 +307,8 @@ BusBwResult cal_busbw(GPUType node_type,float bw_intra,float bw_per_nic, float n
     params.bw_per_nic = bw_per_nic;
     params.bw_intra = bw_intra;
     params.group_split_mask = 0;
-    params.nccl_algo = "ring";
-    params.cross_nic = 2;
+    params.nccl_algo = "ring";              // 默认使用 Ring 算法
+    params.cross_nic = 2;                   // 默认跨 NIC 通信因子（具体含义见后）
     params.coll_type = coll_type;
     params.node_type = node_type;
     params.nic_type = nic_type;
@@ -307,6 +321,7 @@ BusBwResult cal_busbw(GPUType node_type,float bw_intra,float bw_per_nic, float n
     // }
     params.real_nics_pernode = (float)params.nics_pernode;
 
+    // 参数合法性检查与修正
     if (params.node_count < 1) {
         strcpy(info, "Error: The number of nodes must be greater than 0.");
         retcode = 1;
@@ -379,6 +394,7 @@ BusBwResult cal_busbw(GPUType node_type,float bw_intra,float bw_per_nic, float n
     result.is_nvlink = params.is_nvlink;
     return result;
 }
+
 struct DataRow {
     std::string size;
     std::vector<double> values;
@@ -386,6 +402,13 @@ struct DataRow {
 double interpolate(double size, double size1, double size2, double value1, double value2) {
     return value1 + (value2 - value1) * (size - size1) / (size2 - size1);
 }
+
+// 根据通信数据大小（datasize）和节点数（_temp_nnode），从一张预定义的性能比率表（data）中查表或插值得到一个“带宽利用率比例”（ratio）
+/*
+    datasize：通信数据量（单位通常是 Bytes 或 MB）
+    _temp_nnode：通信跨越的节点数量（如 1、2、4、8...，甚至特殊值 9）
+    data：一个二维字符串表
+*/
 float getValue(double datasize, int _temp_nnode, const std::vector<std::vector<std::string>>& data) {
     int colIndex = 0;
 
@@ -416,6 +439,7 @@ float getValue(double datasize, int _temp_nnode, const std::vector<std::vector<s
     }
     double minSize = std::stod(data.front()[0]);
     if (datasize < minSize) {
+        // 0.65/0.95=0.7092
         return std::stod(data.front()[colIndex])/std::stod(data.back()[colIndex]);
     }
 

@@ -1945,6 +1945,8 @@ void Sys::call(EventType type, CallData* data) {
     increase_finished_streams(1);
   }
 }
+
+// 注册延迟事件
 void Sys::try_register_event(
     Callable* callable,
     EventType event,
@@ -1952,12 +1954,15 @@ void Sys::try_register_event(
     Tick& cycles) {
   bool should_schedule = false;
   {
+    // 日志记录（调试用）
     MockNcclLog* NcclLog = MockNcclLog::getInstance();
     NcclLog->writeLog(
         NcclLogLevel::DEBUG, "try_register_event EventType %d ", event);
+    // 线程安全临界区（多线程支持）
     #ifdef NS3_MTP
         Sys::sysCriticalSection cs;
     #endif
+    // 将事件插入事件队列
     if (event_queue.find(Sys::boostedTick() + cycles) == event_queue.end()) {
       std::list<std::tuple<Callable*, EventType, CallData*>> tmp;
       event_queue[Sys::boostedTick() + cycles] = tmp;
@@ -1969,12 +1974,14 @@ void Sys::try_register_event(
     cs.ExitSection();
     #endif
   }
+  //  向底层模拟器（如 NS-3）注册调度
   if (should_schedule) {
     timespec_t tmp = generate_time(cycles);
     BasicEventHandlerData* data =
         new BasicEventHandlerData(this, EventType::CallEvents);
     NI->sim_schedule(tmp, &Sys::handleEvent, data);
   }
+  // 清理与计数
   cycles = 0;
   pending_events++;
   return;
@@ -2015,6 +2022,8 @@ void Sys::schedule(int num) {
   }
   NcclLog->writeLog(NcclLogLevel::DEBUG,"Sys::shedule finished");
 }
+
+// 根据传入的事件类型（EventType），执行对应的回调或状态推进逻辑，并清理事件数据。
 void Sys::handleEvent(void* arg) {
   if (arg == nullptr) { 
     return;
@@ -2025,6 +2034,7 @@ void Sys::handleEvent(void* arg) {
   MockNcclLog* NcclLog = MockNcclLog::getInstance();
 
 
+  // 推进主逻辑
   if (event == EventType::CallEvents) {
     NcclLog->writeLog(NcclLogLevel::DEBUG," Sys::handleEvent EventType::CallEvents");
     node->iterate();

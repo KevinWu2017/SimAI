@@ -118,6 +118,7 @@ void Workload::call(EventType event, CallData* data) {
   }
 }
 void Workload::report() {
+  // 初始化统计变量
   double total_compute = 0;
   double total_exposed = 0;
   // #ifdef ANALYTI
@@ -130,13 +131,17 @@ void Workload::report() {
   std::vector<double> total_fwd_time = {0, 0, 0};
   std::vector<double> total_wg_time = {0, 0, 0};
   std::vector<double> total_ig_time = {0, 0, 0};
+  // 创建报告数据结构 AstraSimDataAPI
   AstraSimDataAPI astraSimDataAPI;
   astraSimDataAPI.run_name = run_name;
   astraSimDataAPI.workload_finished_time = ((double)Sys::boostedTick()) / FREQ;
+  // 打印基本信息
   std::cout<<"workload stats for the job scheduled at NPU offset: "
             <<generator->npu_offset<<std::endl;
+  // 遍历所有层，收集每层的统计信息
   for (int i = 0; i < SIZE; i++) {
     #ifdef ANALYTI
+    // 分析模式（ANALYTICAL）调用简化版 report
     astraSimDataAPI.layers_stats.push_back(layers[i]->report(
         run_name,
         i,
@@ -153,6 +158,7 @@ void Workload::report() {
         Expose_EP_comm,
         this->seprate_log));
     #else
+    // 周期精确模式（如 NS3_MTP）调用完整版 report
     astraSimDataAPI.layers_stats.push_back(layers[i]->report(
         run_name,
         i,
@@ -173,8 +179,10 @@ void Workload::report() {
         Expose_EP_comm));
     #endif
   }
+  // 汇总全局指标
   astraSimDataAPI.total_compute = total_compute;
   astraSimDataAPI.total_exposed_comm = total_exposed;
+  // 获取维度级通信延迟（用于拓扑分析）
   astraSimDataAPI.avg_chunk_latency_per_logical_dimension =
       generator->scheduler_unit->get_average_latency_per_dimension();
   for (auto& latency :
@@ -206,9 +214,13 @@ void Workload::report() {
   }
   #endif
 }
+// 检查当前 workload 是否已完成所有计算和通信，并触发模拟结束流程。
 void Workload::check_for_sim_end() {
+  // 是否已完成所有 passes
   if (pass_counter == TOTAL_PASS) {
+    // 切换状态为等待模拟结束
     current_state = LoopState::Wait_For_Sim_Finish;
+    // 如果还有未完成的通信流，且尚未注册监听 → 注册监听
     if (generator->streams_finished != generator->streams_injected &&
         registered_for_finished_streams == false) {
       generator->register_for_finished_stream(this);
@@ -216,6 +228,7 @@ void Workload::check_for_sim_end() {
       layers[0]->is_weight_grad_comm_finished_blocking();
       return;
     }
+    // 如果所有通信流都完成了 → 正式结束模拟
     if (generator->streams_finished == generator->streams_injected) {
       #ifndef PHY_MTP
       if (generator->id == 0) {
@@ -576,29 +589,36 @@ void Workload::iterate_hybrid_parallel_model_data() {
     return;
   }
 }
+
+// 模拟分布式推理（Distributed Inference）过程中单个时间步的行为 的核心函数
 void Workload::iterate_distributed_inference() {
   assert(index >= 0);
   assert(index < SIZE);
   check_for_sim_end();
   if (current_state == LoopState::Forward_Pass) {
+    // 等待前置通信完成
     if (!layers[index]->is_weight_grad_comm_finished_blocking()) {
       return;
     }
+    // 加载计算延迟（如果还没加载）
     if (delay_loaded == false) {
       counter = layers[index]->get_fwd_pass_compute();
       delay_loaded = true;
     }
+    // 执行计算（通过事件调度）
     if (counter > 0) {
       generator->try_register_event(
           this, EventType::Workload_Wait, NULL, counter);
       return;
     }
+    // 发起本层的输出通信
     if (!collective_issued) {
       collective_issued = true;
       layers[index]->issue_forward_pass_comm(
           SchedulingPolicy::None, CollectiveBarrier::Blocking);
       return;
     }
+    // 推进到下一层
     index++;
     delay_loaded = false;
     collective_issued = false;
@@ -794,23 +814,29 @@ void Workload::iterate_hybrid_parallel_Transformer_fwd_in_bckwd() {
   assert(index < SIZE);
   check_for_sim_end();
   if (current_state == LoopState::Forward_Pass) {
+    // 等待前置通信完成
     if (!layers[index]->is_weight_grad_comm_finished_blocking()) {
       return;
     }
+    // 加载计算延迟（如果还没加载）
     if (delay_loaded == false) {
+      // 前向计算时间
       counter = layers[index]->get_fwd_pass_compute();
       delay_loaded = true;
     }
+    // 执行计算（通过事件调度）
     if (counter > 0) {
       generator->try_register_event(
           this, EventType::Workload_Wait, NULL, counter);
       return;
     }
+    // 发起本层的输出通信
     if (!collective_issued) {
       collective_issued = true;
       if(layers[index]->fwd_pass_comm_size < 4096 && layers[index]->fwd_pass_comm_size >0){
         layers[index]->fwd_pass_comm_size = 4096;
       }
+      // 前向通信（如激活值的 all-gather / send）
       layers[index]->issue_forward_pass_comm(
           SchedulingPolicy::None, CollectiveBarrier::Blocking);
       return;
@@ -827,6 +853,7 @@ void Workload::iterate_hybrid_parallel_Transformer_fwd_in_bckwd() {
     return;
   } else if (current_state == LoopState::Weight_Gradient) {
     if (delay_loaded == false) {
+      // 权重梯度计算时间
       counter = layers[index]->get_weight_grad_compute();
       delay_loaded = true;
     }
@@ -837,6 +864,7 @@ void Workload::iterate_hybrid_parallel_Transformer_fwd_in_bckwd() {
     }
     if (!collective_issued) {
       collective_issued = true;
+      // 权重梯度通信（如 all-reduce）
       layers[index]->issue_weight_grad_comm(
           SchedulingPolicy::FIFO, CollectiveBarrier::Non_Blocking);
     }
@@ -878,6 +906,7 @@ void Workload::iterate_hybrid_parallel_Transformer_fwd_in_bckwd() {
       return;
     }
     if (delay_loaded == false) {
+      // 输入梯度计算时间
       counter = layers[index]->get_input_grad_compute();
       delay_loaded = true;
     }
@@ -888,6 +917,7 @@ void Workload::iterate_hybrid_parallel_Transformer_fwd_in_bckwd() {
     }
     if (!collective_issued) {
       collective_issued = true;
+      // 输入梯度通信（如 reduce-scatter / recv）
       layers[index]->issue_input_grad_comm(
           SchedulingPolicy::LIFO, CollectiveBarrier::Blocking);
       return;

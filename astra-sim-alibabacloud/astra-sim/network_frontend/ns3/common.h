@@ -990,11 +990,16 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
     trace_nodes = NodeContainer(trace_nodes, n.Get(nid));
   }
 
+  printf("before open_trace_output \n");
+
   FILE *trace_output = fopen(trace_output_file.c_str(), "w");
+
+  printf("111 \n");
   if (enable_trace)
     qbb.EnableTracing(trace_output, trace_nodes);
 
   {
+    printf("222 \n");
     SimSetting sim_setting;
     for (auto i : nbr2if) {
       for (auto j : i.second) {
@@ -1007,10 +1012,18 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
         sim_setting.port_speed[node][intf] = bps;
       }
     }
+
+    printf("333 \n");
     sim_setting.win = maxBdp;
+
+    printf("444 \n");
+    printf("trace_output = %p\n", trace_output);
     sim_setting.Serialize(trace_output);
+
+    printf("555 \n");
   }
 
+  printf("Create Applications \n");
   NS_LOG_INFO("Create Applications.");
 
   Time interPacketInterval = Seconds(0.0000005 / 2);
@@ -1025,6 +1038,8 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
 
   topof.close();
   tracef.close();
+
+  printf("before schedule \n");
 
   if (link_down_time > 0) {
     Simulator::Schedule(Seconds(2) + MicroSeconds(link_down_time),

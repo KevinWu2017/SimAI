@@ -40,13 +40,13 @@ void AnaSim::Run() {
 }
 
 void AnaSim::Schedule(
-  
     uint64_t delay,
     void (*fun_ptr)(void* fun_arg),
     void* fun_arg) {
     uint64_t time = tick + delay;
     CallTask calltask = CallTask(time,fun_ptr,fun_arg);
     // std::cout << "before push all_list: " << call_list.size() << std::endl;
+    // call_list 很可能是一个 优先队列（priority_queue），按 exec_time 升序排列。
     call_list.push(calltask);
     // std::cout << "after push of call_list: " << call_list.size() << std::endl;
 }

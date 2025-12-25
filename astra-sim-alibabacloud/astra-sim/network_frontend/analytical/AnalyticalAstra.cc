@@ -86,7 +86,7 @@ int main(int argc,char *argv[]) {
     }
     using_num_gpus += job_npus;
   }
-  std::map<int, int> node2nvswitch; //
+  std::map<int, int> node2nvswitch; 
   for(int i = 0; i < all_gpu_num; ++ i) {
     node2nvswitch[i] = all_gpu_num + i / param->net_work_param.gpus_per_server;
   }
