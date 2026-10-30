@@ -32,8 +32,15 @@ def main():
     parser = argparse.ArgumentParser(description="批量运行 SimAI_analytical（按 tp/pp/ep 命名，支持子目录输出）")
     parser.add_argument('--workLoadInput_dir', required=True, help='包含 latencyXXX 子目录的 workload 根目录')
     parser.add_argument('--output_dir', required=True, help='最终输出根目录')
+    parser.add_argument('--num-gpus', type=int, default=32)
+    parser.add_argument('--gpus-per-node', type=int, default=8)
+    parser.add_argument('--nvlink-bandwidth', type=float, default=360)
+    parser.add_argument('--nic-bandwidth', type=float, default=48.5)
+    parser.add_argument('--nodes-per-switch', type=int, default=8)
 
     args = parser.parse_args()
+    if args.num_gpus < 1 or args.gpus_per_node < 1 or args.num_gpus % args.gpus_per_node:
+        parser.error('num-gpus must be a positive multiple of gpus-per-node')
 
     workLoadInput_dir = Path(args.workLoadInput_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
@@ -87,11 +94,11 @@ def main():
             cmd = [
                 str(simai_bin),
                 "-w", str(workload_file),
-                "-g", "32",
-                "-nv", "360",
-                "-nic", "48.5",
-                "-n_p_s", "8",
-                "-g_p_s", "8",
+                "-g", str(args.num_gpus),
+                "-nv", str(args.nvlink_bandwidth),
+                "-nic", str(args.nic_bandwidth),
+                "-n_p_s", str(args.nodes_per_switch),
+                "-g_p_s", str(args.gpus_per_node),
                 "-r", r_prefix
             ]
 
