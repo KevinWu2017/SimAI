@@ -4,6 +4,9 @@
 
 # SimAI
 
+HBF development: see [source bases and compatibility](README_HBF_PORT.md) and
+[PP search usage](aicb/README_HBF_PP.md). The HBF branch is `hbf-pp-search`.
+
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![NSDI'25](https://img.shields.io/badge/NSDI'25-SimAI-blue.svg)](https://ennanzhai.github.io/pub/nsdi25spring-simai.pdf)
 

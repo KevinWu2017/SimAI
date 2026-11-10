@@ -1,0 +1,11 @@
+--- a/astra-sim-alibabacloud/astra-sim/workload/Workload.cc
++++ b/astra-sim-alibabacloud/astra-sim/workload/Workload.cc
+@@ -608,7 +608,7 @@
+       index = 0;
+       pass_counter++;
+     }
+-    generator->register_event(this, EventType::General, NULL, 1);
++    generator->register_event(this, EventType::General, NULL, 2);
+     return;
+   }
+ }
