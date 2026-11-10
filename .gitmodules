@@ -5,7 +5,7 @@
 [submodule "aicb"]
 	path = aicb
 	url = https://github.com/luoshicai/aicb.git
-	branch = hbf-port-v1.7
+	branch = hbf-pp-search
 [submodule "ns-3-alibabacloud"]
 	path = ns-3-alibabacloud
 	url = https://github.com/aliyun/ns-3-alibabacloud
